@@ -1,37 +1,62 @@
-import { Configuration, OpenAIApi } from "openai";
+import createChatCompletion from "./openapi/createChatCompletion";
+import codeDeveloper from "./plugins/code-developer";
+import taskManager from "./plugins/task-manager";
+import appendFile from "./services/append-file";
+import deleteFiles from "./services/delete-files";
 
-const configuration = new Configuration({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-const openai = new OpenAIApi(configuration);
+const messages = [{
+  role: 'system',
+  content: `Eres un asistente virtual experto en generar tareas de programacion en nodejs. 
+  Recibiras un texto que solicita la creacion de un codigo en nodejs. Tu objectivo crear las tareas segun los requerimientos de un usuario para que las ejecute otro asistente virtual. 
+  Debes seguir las siguiente instrucciones:
+  - Tu respuesta debe estar ordenada por orden de ejecucion y siempre incluir el nombre del archivo. 
+  - Debes caracterizar la funcion, incluir su nombre de funcion y el archivo al que pertenece.
+  - Cada funcion debe ir en un archivo separado, por lo que incluye el nombre del archivo en la descripcion de la tarea
+  - Cada tarea debe incluir todo lo que se debe hacer en ese archivo.
+  - En la primera tarea, describiras el contenido del package.json del projecto.
+  - No debe incluir codigo.
+  - Para configuracion usar .env con dotenv.
+  - No considerar tareas que no sean escribir codigo.
+  `
+}];
 
 export default async function (req, res) {
-  if (!configuration.apiKey) {
-    res.status(500).json({
+  const role = req.body.role;
+  const content = req.body.content;
+
+  if (!role || !content) {
+    return res.status(400).json({
       error: {
-        message: "OpenAI API key not configured, please follow instructions in README.md",
+        message: "Please enter a role and content",
       }
     });
-    return;
   }
 
-  const animal = req.body.animal || '';
-  if (animal.trim().length === 0) {
-    res.status(400).json({
-      error: {
-        message: "Please enter a valid animal",
-      }
-    });
-    return;
-  }
+  const message = { role, content };
+  messages.push(message);
 
   try {
-    const completion = await openai.createCompletion({
-      model: "text-davinci-003",
-      prompt: generatePrompt(animal),
-      temperature: 0.6,
-    });
-    res.status(200).json({ result: completion.data.choices[0].text });
+    console.log('Deleting previous generated code');
+    const baseCodeGenerationPath = 'C:/Users/Jordna/Documents/Personal/Proyectos/ia/openai-quickstart-node/code/';
+    await deleteFiles(baseCodeGenerationPath);
+
+    console.log("Generating code tasks");
+    const completion = await createChatCompletion(messages);
+
+    messages.push(completion.result);
+    
+    console.log("Extracting code tasks");
+    const tasksResult = await taskManager(JSON.stringify(messages));
+
+    for (let task of tasksResult.tasks) {
+      console.log(`Executing code task ${task.taskNumber}: ${task.task}`);
+      const code = await codeDeveloper(task.task);
+      console.log(code);
+      appendFile(code.filename, baseCodeGenerationPath + code.filename, code.isJSON ? JSON.stringify(code.code) : code.code);
+    }
+
+    // console.log(messages);
+    return res.status(200).json({ result: messages });
   } catch(error) {
     // Consider adjusting the error handling logic for your use case
     if (error.response) {
@@ -46,17 +71,4 @@ export default async function (req, res) {
       });
     }
   }
-}
-
-function generatePrompt(animal) {
-  const capitalizedAnimal =
-    animal[0].toUpperCase() + animal.slice(1).toLowerCase();
-  return `Suggest three names for an animal that is a superhero.
-
-Animal: Cat
-Names: Captain Sharpclaw, Agent Fluffball, The Incredible Feline
-Animal: Dog
-Names: Ruff the Protector, Wonder Canine, Sir Barks-a-Lot
-Animal: ${capitalizedAnimal}
-Names:`;
 }
